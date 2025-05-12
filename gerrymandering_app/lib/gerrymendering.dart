@@ -17,9 +17,11 @@ class _GerrymanderingGameState extends State<GerrymanderingGame> {
   int nextDistrictId = 1;
   final List<int> selectionHistory = [];
 
-  Set<int> dragSelectedIndexes = {};
+  final List<int> dragSelectedIndexes = []; // list preserves order
   GlobalKey gridKey = GlobalKey();
   final Map<int, GlobalKey> tileKeys = {};
+
+  DateTime? _lastDragTime;
 
   @override
   void initState() {
@@ -49,7 +51,7 @@ class _GerrymanderingGameState extends State<GerrymanderingGame> {
     for (var i in dragSelectedIndexes) {
       tiles[i].districtId = id;
     }
-    districts[id] = dragSelectedIndexes.toList();
+    districts[id] = List.from(dragSelectedIndexes);
     selectionHistory.add(id);
     dragSelectedIndexes.clear();
     setState(() {});
@@ -81,35 +83,35 @@ class _GerrymanderingGameState extends State<GerrymanderingGame> {
   Color _partyColor(Party party) =>
       party == Party.red ? Colors.red : Colors.blue;
 
-  void _ungroupDistrict(int districtId) {
-    for (var i in districts[districtId]!) {
-      tiles[i].districtId = null;
-    }
-    districts.remove(districtId);
-    selectionHistory.remove(districtId);
-    setState(() {});
-  }
-
   void _handleDrag(DragUpdateDetails details) {
-    RenderBox gridBox = gridKey.currentContext!.findRenderObject() as RenderBox;
+    final now = DateTime.now();
+    if (_lastDragTime != null &&
+        now.difference(_lastDragTime!).inMilliseconds < 20) return;
+    _lastDragTime = now;
+
+    RenderBox? gridBox =
+        gridKey.currentContext?.findRenderObject() as RenderBox?;
+    if (gridBox == null) return;
+
     Offset localPosition = gridBox.globalToLocal(details.globalPosition);
     double tileSize = gridBox.size.width / gridSize;
     int row = (localPosition.dy / tileSize).floor();
     int col = (localPosition.dx / tileSize).floor();
+    if (row < 0 || col < 0 || row >= gridSize || col >= gridSize) return;
+
     int index = row * gridSize + col;
 
-    if (index >= 0 &&
-        index < tiles.length &&
-        tiles[index].districtId == null &&
-        !dragSelectedIndexes.contains(index)) {
-      // Add if it's first or adjacent to last
-      if (dragSelectedIndexes.isEmpty ||
-          _isAdjacent(dragSelectedIndexes.last, index)) {
-        dragSelectedIndexes.add(index);
-        setState(() {});
-        if (dragSelectedIndexes.length == districtSize) {
-          _completeDistrict();
-        }
+    if (index < 0 ||
+        index >= tiles.length ||
+        tiles[index].districtId != null ||
+        dragSelectedIndexes.contains(index)) return;
+
+    if (dragSelectedIndexes.isEmpty ||
+        _isAdjacent(dragSelectedIndexes.last, index)) {
+      dragSelectedIndexes.add(index);
+      setState(() {});
+      if (dragSelectedIndexes.length == districtSize) {
+        _completeDistrict();
       }
     }
   }
@@ -118,6 +120,15 @@ class _GerrymanderingGameState extends State<GerrymanderingGame> {
     int ax = a % gridSize, ay = a ~/ gridSize;
     int bx = b % gridSize, by = b ~/ gridSize;
     return ((ax - bx).abs() + (ay - by).abs()) == 1;
+  }
+
+  void _ungroupDistrict(int districtId) {
+    for (var i in districts[districtId]!) {
+      tiles[i].districtId = null;
+    }
+    districts.remove(districtId);
+    selectionHistory.remove(districtId);
+    setState(() {});
   }
 
   @override
@@ -139,73 +150,70 @@ class _GerrymanderingGameState extends State<GerrymanderingGame> {
         children: [
           Expanded(
             child: Text(
-                "Red wins: ${results[Party.red]} | Blue wins: ${results[Party.blue]}",
-                style: const TextStyle(fontSize: 18)),
+              "Red wins: ${results[Party.red]} | Blue wins: ${results[Party.blue]}",
+              style: const TextStyle(fontSize: 18),
+            ),
           ),
           Expanded(
             flex: 5,
             child: AspectRatio(
-              aspectRatio: 5.0,
-              child: Row(
-                children: [
-                  const Spacer(
-                    flex: 4,
+              aspectRatio: 1.0,
+              child: GestureDetector(
+                key: gridKey,
+                onPanUpdate: _handleDrag,
+                onPanEnd: (_) {
+                  if (dragSelectedIndexes.length < districtSize) {
+                    dragSelectedIndexes.clear();
+                    setState(() {});
+                  }
+                },
+                child: GridView.builder(
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: gridSize,
+                    childAspectRatio: 1,
                   ),
-                  Expanded(
-                    flex: 5,
-                    child: GestureDetector(
-                      key: gridKey,
-                      onPanUpdate: _handleDrag,
-                      child: GridView.builder(
-                        physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: gridSize,
-                          childAspectRatio: 1,
-                        ),
-                        itemCount: gridSize * gridSize,
-                        itemBuilder: (context, index) {
-                          final tile = tiles[index];
-                          final isSelected =
-                              dragSelectedIndexes.contains(index);
-                          final borderColor = isSelected
-                              ? Colors.transparent
-                              : tile.districtId != null
-                                  ? _partyColor(
-                                      _districtMajority(tile.districtId!))
-                                  : Colors.transparent;
+                  itemCount: gridSize * gridSize,
+                  itemBuilder: (context, index) {
+                    final tile = tiles[index];
+                    final isSelected = dragSelectedIndexes.contains(index);
+                    final borderColor = isSelected
+                        ? Colors.green
+                        : tile.districtId != null
+                            ? _partyColor(_districtMajority(tile.districtId!))
+                            : Colors.transparent;
 
-                          return GestureDetector(
-                            onTap: () {
-                              if (tile.districtId != null) {
-                                _ungroupDistrict(tile.districtId!);
-                              }
-                            },
-                            child: Container(
-                              key: tileKeys[index],
-                              margin: const EdgeInsets.all(2),
-                              decoration: BoxDecoration(
-                                color: tile.party == Party.red
-                                    ? Colors.red[100]
-                                    : Colors.blue[100],
-                                border:
-                                    Border.all(color: borderColor, width: 3),
-                              ),
-                              child: const Center(
-                                  child: Icon(Icons.home, size: 40)),
-                            ),
-                          );
-                        },
+                    return GestureDetector(
+                      onTap: () {
+                        if (tile.districtId != null) {
+                          _ungroupDistrict(tile.districtId!);
+                        }
+                      },
+                      child: Container(
+                        key: tileKeys[index],
+                        margin: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: tile.party == Party.red
+                              ? Colors.red[100]
+                              : Colors.blue[100],
+                          border: Border.all(color: borderColor, width: 3),
+                        ),
+                        child: Center(
+                            child: Icon(
+                          Icons.home,
+                          size: 40,
+                          color: tile.party == Party.red
+                              ? Colors.red[900]
+                              : Colors.blue[900],
+                        )),
                       ),
-                    ),
-                  ),
-                  const Spacer(
-                    flex: 4,
-                  ),
-                ],
+                    );
+                  },
+                ),
               ),
             ),
           ),
-          const Spacer()
+          const Spacer(),
         ],
       ),
     );
